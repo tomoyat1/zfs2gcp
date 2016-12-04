@@ -1,0 +1,113 @@
+#!/bin/sh
+
+
+# Copyright (c) 2016 Tomoya Tabuchi
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that following conditions are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS 'AS IS' AND ANY
+# EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY
+# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+# THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+usage()
+{
+	echo "missing comnand"
+	echo "usage: zfs2gcp command args ..."
+	echo "where 'command' is one of the following:"
+	echo -e "\tbackup <dataset>"
+	echo -e "\trestore <snapshot> <dataset>"
+	echo -e "\tlist [dataset]"
+	exit 1
+}
+
+backup_help()
+{
+	echo "missing arguments"
+	echo "usage: zfs2gcp backup <dataset>"
+	exit 1
+}
+
+restore_help()
+{
+	echo "missing snapshot name"
+	echo "zfs2gcp restore <snapshot> <dataset>"
+	exit 1
+}
+
+bucket_help()
+{
+		echo '$ZFS2GCP_BUCKET is unset. Set the name of the bucket used for backups'
+		exit 1
+}
+
+if [ -z $ZFS2GCP_BUCKET ]; then
+	bucket_help
+fi
+
+if [ $1 = "backup" ]; then
+	if [ $# -ne 2 ]; then
+		backup_help
+	fi
+	last_snapshot=`zfs list -H -o name -d 1 -t snapshot $2 | grep zfs2gcp | tail -1`
+	snapshot_name=zfs2gcp_`date +%s`
+	info=`mktemp`
+	zfs snapshot $2@$snapshot_name
+	if [ -z $last_snapshot ]; then
+		zfs send -P $2@$snapshot_name 2> $info | gsutil cp /dev/stdin $ZFS2GCP_BUCKET`echo $2@$snapshot_name | sed 's/\//-/g'`
+		awk '/full/{print "full" " " $2}' $info >> $HOME/.zfs2gcp-data
+	else
+		zfs send -P -i $last_snapshot $2@$snapshot_name 2> $info | gsutil cp /dev/stdin $ZFS2GCP_BUCKET`echo $2@$snapshot_name | sed 's/\//-/g'`
+		awk '/incremental/{print $2 " " $3}' $info >> $HOME/.zfs2gcp-data
+	fi
+	rm $info
+elif [ $1 = "restore" ]; then
+	if [ $# -ne 3 ]; then
+		restore_help
+	fi
+	dataset=`echo $2 | cut -d'@' -f1`
+	snapshot=`echo $2 | cut -d'@' -f2`
+	search=$snapshot
+	list="$snapshot"
+	while [ "$search" != "full" ]; do
+		found=`cat $HOME/.zfs2gcp-data | grep "$search\$" | cut -d' ' -f1`
+		list="$found $list"
+		search=$found
+	done
+	for s in $list; do
+		if [ $s != "full" ]; then
+			gsutil cat $ZFS2GCP_BUCKET`echo $dataset@$s | sed 's/\//-/g'` \
+			    | zfs recv $3
+		fi
+	done
+elif [ $1 = "list" ]; then
+	output=`gsutil ls $ZFS2GCP_BUCKET* \
+	    | grep @zfs2gcp \
+	    | sed "s^$ZFS2GCP_BUCKET^^g" \
+	    | sed 's/-/\//g'`
+	if [ $# -eq 2 ]; then
+		output=`echo $output | grep $2`
+	fi
+	if [ -n "$output" ]; then
+		for o in $output; do
+			echo $o
+		done
+	else
+		echo "No snapshots found"
+	fi
+else
+	usage
+fi
