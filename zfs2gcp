@@ -23,14 +23,20 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 # THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+echo_e()
+{
+	IFS=" "
+	printf '%b\n' "$*"
+}
+
 usage()
 {
 	echo "missing comnand"
 	echo "usage: zfs2gcp command args ..."
 	echo "where 'command' is one of the following:"
-	echo -e "\tbackup <dataset>"
-	echo -e "\trestore <snapshot> <dataset>"
-	echo -e "\tlist [dataset]"
+	echo_e "\tbackup <dataset>"
+	echo_e "\trestore <snapshot> <dataset>"
+	echo_e "\tlist [dataset]"
 	exit 1
 }
 
@@ -54,56 +60,56 @@ bucket_help()
 		exit 1
 }
 
-if [ -z $ZFS2GCP_BUCKET ]; then
+if [ -z "$ZFS2GCP_BUCKET" ]; then
 	bucket_help
 fi
 
-if [ $1 = "backup" ]; then
+if [ "$1" = "backup" ]; then
 	if [ $# -ne 2 ]; then
 		backup_help
 	fi
-	last_snapshot=`zfs list -H -o name -d 1 -t snapshot $2 | grep zfs2gcp | tail -1`
-	snapshot_name=zfs2gcp_`date +%s`
-	info=`mktemp`
-	zfs snapshot $2@$snapshot_name
-	if [ -z $last_snapshot ]; then
-		zfs send -P $2@$snapshot_name 2> $info | gsutil cp /dev/stdin $ZFS2GCP_BUCKET`echo $2@$snapshot_name | sed 's/\//-/g'`
-		awk '/full/{print "full" " " $2}' $info >> $HOME/.zfs2gcp-data
+	last_snapshot=$(zfs list -H -o name -d 1 -t snapshot "$2" | grep zfs2gcp | tail -1)
+	snapshot_name=zfs2gcp_$(date +%s)
+	info=$(mktemp)
+	zfs snapshot "$2@$snapshot_name"
+	if [ -z "$last_snapshot" ]; then
+		zfs send -P "$2@$snapshot_name" 2> "$info" | gsutil cp /dev/stdin "$ZFS2GCP_BUCKET$(echo "$2@$snapshot_name" | sed 's/\//-/g')"
+		awk '/full/{print "full" " " $2}' "$info" >> "$HOME/.zfs2gcp-data"
 	else
-		zfs send -P -i $last_snapshot $2@$snapshot_name 2> $info | gsutil cp /dev/stdin $ZFS2GCP_BUCKET`echo $2@$snapshot_name | sed 's/\//-/g'`
-		awk '/incremental/{print $2 " " $3}' $info >> $HOME/.zfs2gcp-data
+		zfs send -P -i "$last_snapshot" "$2@$snapshot_name" 2> "$info" | gsutil cp /dev/stdin "$ZFS2GCP_BUCKET$(echo "$2@$snapshot_name" | sed 's/\//-/g')"
+		awk '/incremental/{print $2 " " $3}' "$info" >> "$HOME/.zfs2gcp-data"
 	fi
-	rm $info
-elif [ $1 = "restore" ]; then
+	rm "$info"
+elif [ "$1" = "restore" ]; then
 	if [ $# -ne 3 ]; then
 		restore_help
 	fi
-	dataset=`echo $2 | cut -d'@' -f1`
-	snapshot=`echo $2 | cut -d'@' -f2`
+	dataset=$(echo "$2" | cut -d'@' -f1)
+	snapshot=$(echo "$2" | cut -d'@' -f2)
 	search=$snapshot
 	list="$snapshot"
 	while [ "$search" != "full" ]; do
-		found=`cat $HOME/.zfs2gcp-data | grep "$search\$" | cut -d' ' -f1`
+		found=$(grep "$search\$" "$HOME/.zfs2gcp-data" | cut -d' ' -f1)
 		list="$found $list"
 		search=$found
 	done
 	for s in $list; do
-		if [ $s != "full" ]; then
-			gsutil cat $ZFS2GCP_BUCKET`echo $dataset@$s | sed 's/\//-/g'` \
-			    | zfs recv $3
+		if [ "$s" != "full" ]; then
+			gsutil cat "$ZFS2GCP_BUCKET$(echo "$dataset@$s" | sed 's/\//-/g')" \
+			    | zfs recv "$3"
 		fi
 	done
-elif [ $1 = "list" ]; then
-	output=`gsutil ls $ZFS2GCP_BUCKET* \
+elif [ "$1" = "list" ]; then
+	output=$(gsutil ls "$ZFS2GCP_BUCKET*" \
 	    | grep @zfs2gcp \
 	    | sed "s^$ZFS2GCP_BUCKET^^g" \
-	    | sed 's/-/\//g'`
+	    | sed 's/-/\//g')
 	if [ $# -eq 2 ]; then
-		output=`echo $output | grep $2`
+		output=$(echo "$output" | grep "$2")
 	fi
 	if [ -n "$output" ]; then
 		for o in $output; do
-			echo $o
+			echo "$o"
 		done
 	else
 		echo "No snapshots found"
